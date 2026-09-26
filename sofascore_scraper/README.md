@@ -114,6 +114,37 @@ persen. Pakai kolom `..._pct` untuk persentasenya.
 
 ## Jika ada masalah
 
+### `--cek-koneksi` gagal di langkah [2/3] / IP dibelokkan
+
+Contoh gejala: DNS laptop memberi `158.140.186.3`, padahal IP asli SofaScore ada di
+jaringan Fastly (`151.101.x.52`), lalu koneksi port 443 *timeout*. Artinya DNS
+jaringanmu **membelokkan** sofascore.com (pola blokir ISP), jadi permintaan tidak
+pernah sampai ke SofaScore. Perbaikan di dalam script tidak akan membantu; yang perlu
+diubah adalah jalur internetnya.
+
+**Opsi A – Cloudflare WARP (paling mudah, gratis):**
+1. Unduh aplikasi **1.1.1.1 / Cloudflare WARP** dari <https://one.one.one.one/>.
+2. Pasang, buka, lalu aktifkan (**Connected**).
+3. Jalankan `python sofascore_scraper.py --cek-koneksi` lagi. Langkah [2/3] harus
+   `berhasil`, lalu lanjutkan dengan `--probe`.
+
+**Opsi B – Ganti DNS Windows 11 ke 1.1.1.1 + DNS-over-HTTPS:**
+1. *Settings → Network & internet → Wi-Fi* (atau *Ethernet*) → *Hardware properties*.
+2. *DNS server assignment → Edit → Manual*, aktifkan **IPv4**.
+3. *Preferred DNS*: `1.1.1.1`, *DNS over HTTPS*: **On (automatic template)**.
+   *Alternate DNS*: `1.0.0.1`, *DNS over HTTPS*: **On**. Simpan.
+4. Buka PowerShell: `ipconfig /flushdns`, lalu jalankan `--cek-koneksi` lagi.
+
+Di Windows 10 (tanpa pilihan DNS over HTTPS), mengganti DNS saja sering tidak cukup
+karena ISP bisa ikut menyadap DNS biasa, jadi pakai **Opsi A**. Kalau DNS sudah benar
+(langkah [1/3] tidak lagi menampilkan PERHATIAN) tetapi langkah [2/3] masih *timeout*,
+artinya pemblokiran dilakukan lebih dari sekadar DNS, jadi pakai **Opsi A**.
+
+Cara cepat memastikan: buka `https://www.sofascore.com` di browser biasa. Kalau
+tidak bisa dibuka atau muncul halaman blokir, masalahnya ada di jaringan, bukan di script.
+
+### Masalah lain
+
 | Gejala | Solusi |
 |---|---|
 | `Gagal membuka browser ...` | Pastikan Chrome terpasang; tutup semua jendela Chrome yang dibuka script sebelumnya; atau coba `--browser edge`. |

@@ -522,6 +522,21 @@ def simpan_keluaran(per_laga, dilewati, kamus, out: Path, sep: str):
 
 
 # --------------------------------------------------------------------------
+def ip_dns_publik(host):
+    """IP menurut DNS publik lewat HTTPS (DoH), yang tidak bisa dibelokkan seperti DNS biasa.
+    Mengembalikan set IPv4, atau None jika layanan DoH tidak bisa dihubungi."""
+    import requests
+    layanan = (("https://cloudflare-dns.com/dns-query", {"accept": "application/dns-json"}),
+               ("https://dns.google/resolve", {}))
+    for url, header in layanan:
+        try:
+            r = requests.get(url, params={"name": host, "type": "A"}, headers=header, timeout=10)
+            return {j["data"] for j in r.json().get("Answer", []) if j.get("type") == 1}
+        except Exception:
+            continue
+    return None
+
+
 def cek_koneksi(contact=""):
     """Diagnosis bertahap: DNS -> koneksi TCP -> request HTTPS."""
     import socket
@@ -535,15 +550,34 @@ def cek_koneksi(contact=""):
         print(f"      GAGAL ({e}). Masalah DNS/jaringan, belum sampai ke SofaScore.")
         return
 
+    publik = ip_dns_publik(host)
+    dibelokkan = False
+    if publik:
+        print(f"      IP menurut DNS publik (Cloudflare/Google): {', '.join(sorted(publik))}")
+        ip4 = {x for x in ip if ":" not in x}
+        dibelokkan = bool(ip4) and not (ip4 & publik)
+        if dibelokkan:
+            print("      PERHATIAN: IP dari DNS laptop BERBEDA dengan DNS publik.")
+            print("      Kemungkinan besar DNS jaringanmu membelokkan domain ini (blokir ISP).")
+    else:
+        print("      (DNS publik lewat HTTPS tidak bisa dihubungi untuk pembanding)")
+
     print("[2/3] Membuka koneksi ke port 443")
     try:
         with socket.create_connection((host, 443), timeout=10):
             print("      -> berhasil")
     except OSError as e:
         print(f"      GAGAL ({type(e).__name__}). Koneksi tidak terbentuk sama sekali.")
-        print("      KESIMPULAN: hambatan di level JARINGAN (firewall/antivirus/jaringan")
-        print("      kampus/penyedia internet), bukan penolakan dari server SofaScore.")
-        print("      Coba dari jaringan lain (mis. hotspot HP) untuk memastikan.")
+        if dibelokkan:
+            print("      KESIMPULAN: domain sofascore.com DIBELOKKAN oleh DNS jaringanmu ke")
+            print("      server lain (pola blokir ISP), jadi permintaan tidak pernah sampai")
+            print("      ke SofaScore. Solusi: pakai Cloudflare WARP (aplikasi 1.1.1.1), atau")
+            print("      ubah DNS ke 1.1.1.1 dengan DNS-over-HTTPS. Lihat README bagian")
+            print("      'Jika ada masalah', lalu jalankan --cek-koneksi lagi.")
+        else:
+            print("      KESIMPULAN: hambatan di level JARINGAN (firewall/antivirus/jaringan")
+            print("      kampus/penyedia internet), bukan penolakan dari server SofaScore.")
+            print("      Coba dari jaringan lain (mis. hotspot HP) untuk memastikan.")
         return
 
     print("[3/3] Request HTTPS ke API (tanpa browser)")
