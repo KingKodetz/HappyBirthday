@@ -51,37 +51,31 @@ python sofascore_scraper.py --probe --leagues premier-league
 - `--probe` hanya mengirim beberapa request. Kalau muncul **`PROBE BERHASIL`** beserta
   contoh kolom statistik, lanjut ke langkah 3.
 
-## 3. Jalankan pengambilan data
+## 3. Jalankan pengambilan data (semua 5 liga, 2018/19 – 2025/26, sekali jalan)
 
-Disarankan per liga dulu (lebih mudah dipantau):
-
-```bash
-python sofascore_scraper.py --leagues premier-league --contact emailkamu@student.uns.ac.id
-python sofascore_scraper.py --leagues laliga --contact emailkamu@student.uns.ac.id
-python sofascore_scraper.py --leagues serie-a --contact emailkamu@student.uns.ac.id
-python sofascore_scraper.py --leagues bundesliga --contact emailkamu@student.uns.ac.id
-python sofascore_scraper.py --leagues ligue-1 --contact emailkamu@student.uns.ac.id
-```
-
-Atau sekaligus semua liga dan musim:
+Cukup **klik dua kali `jalankan_semua.bat`**, atau di terminal:
 
 ```bash
-python sofascore_scraper.py --contact emailkamu@student.uns.ac.id
+python sofascore_scraper.py
 ```
 
-Setelah semua liga terkumpul, bangun CSV gabungan 5 liga dari cache (tanpa internet):
+Tanpa `--leagues`/`--seasons`, script otomatis mengambil kelima liga dan semua musim,
+lalu membangun CSV gabungan di akhir. **Boleh ditinggal tidur**:
 
-```bash
-python sofascore_scraper.py --build-only
-```
+- Kena challenge/403: halaman dimuat ulang, script istirahat bertahap (1, 2, 5, 10, 15,
+  lalu 30 menit) dan mencoba lagi sendiri, tanpa menunggu Enter.
+- Internet/WARP putus atau browser tertutup: script menunggu, membuka browser lagi, lalu lanjut.
+- Error tak terduga: script dimulai ulang otomatis dari cache.
+- Data yang sempat gagal dicoba lagi di putaran berikutnya secara otomatis.
+- Laptop dicegah masuk *sleep* selama berjalan (layar boleh mati).
+- Setiap 300 request, script istirahat 3 menit agar tidak memicu challenge.
+- Semua kejadian dicatat di `data_sofascore/log_scraping.txt`.
 
-**Perkiraan waktu:** ±14.000 laga × ±2,5 detik ≈ **10 jam** untuk semua liga
-(±20 jam jika memakai `--with-odds`). Laptop jangan sampai *sleep*; kalau terputus,
-cukup jalankan perintah yang sama lagi dan script akan melanjutkan dari cache.
+**Perkiraan waktu:** ±14.000 laga ≈ **12–15 jam**. Kalau pagi belum selesai, jalankan
+lagi perintah yang sama; script melanjutkan dari cache.
 
-Selama berjalan, **jangan tutup dan jangan pakai jendela browser yang dibuka script**
-(boleh di-*minimize*). Kalau jendelanya tertutup, script akan membukanya lagi. Browser
-ditutup otomatis saat script selesai.
+Sebelum ditinggal: **WARP tetap Connected**, laptop dicolok charger, dan jendela
+Chrome yang dibuka script jangan ditutup (boleh di-*minimize*).
 
 ## 4. Hasil (folder `data_sofascore/`)
 
@@ -110,7 +104,9 @@ persen. Pakai kolom `..._pct` untuk persentasenya.
 | `--browser chrome\|edge` | browser yang dipakai (default chrome) |
 | `--browser-path` | lokasi `chrome.exe`/`msedge.exe` jika tidak di tempat standar |
 | `--port` | port debugging browser (default 9222) |
-| `--delay` | jeda antar request, detik (default 2) |
+| `--delay` | jeda rata-rata antar request, detik (default 2,5) |
+| `--istirahat-tiap`, `--istirahat-menit` | istirahat berkala (default tiap 300 request, 3 menit) |
+| `--manual` | perilaku lama: minta Enter saat challenge (tidak bisa ditinggal) |
 | `--with-odds` | ikut ambil odds 1X2 (request jadi 2×) |
 | `--contact` | email kamu, dicantumkan di identitas request mode requests |
 | `--out` | folder keluaran (default `data_sofascore`) |

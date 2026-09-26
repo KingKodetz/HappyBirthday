@@ -22,6 +22,7 @@ Contoh:
 import argparse
 import json
 import os
+import random
 import re
 import shutil
 import subprocess
@@ -107,6 +108,57 @@ def tunggu_pengguna(pesan: str, detik_cadangan: int = 15):
         time.sleep(detik_cadangan)
 
 
+# Jeda (detik) saat terkena challenge/403: naik bertahap, angka terakhir diulang terus.
+JEDA_BLOKIR = [60, 120, 300, 600, 900, 1800]
+# Jeda (detik) saat koneksi/browser bermasalah untuk satu URL; setelah habis, URL dilewati
+# (akan dicoba lagi otomatis di putaran berikutnya).
+JEDA_GAGAL = [30, 60, 120, 300, 600, 900]
+
+LOG_PATH = None  # diisi di main(): data_sofascore/log_scraping.txt
+
+
+def catat(pesan: str):
+    """Cetak pesan dengan jam, dan simpan juga ke file log."""
+    baris = f"[{datetime.now():%H:%M:%S}] {pesan}"
+    print(baris, flush=True)
+    if LOG_PATH is not None:
+        try:
+            with open(LOG_PATH, "a", encoding="utf-8") as fh:
+                fh.write(f"{datetime.now():%Y-%m-%d} {baris}\n")
+        except OSError:
+            pass
+
+
+def tidur(detik: float, alasan: str = ""):
+    """Tidur panjang dengan keterangan kapan lanjut."""
+    if detik >= 60:
+        lanjut = datetime.fromtimestamp(time.time() + detik)
+        catat(f"   ...{alasan} istirahat {detik / 60:.0f} menit, lanjut sekitar pukul {lanjut:%H:%M}")
+    time.sleep(detik)
+
+
+def bunyi():
+    """Bunyi singkat (Windows) supaya terdengar jika Anda ada di dekat laptop."""
+    try:
+        import winsound
+        winsound.MessageBeep(winsound.MB_ICONEXCLAMATION)
+    except Exception:
+        pass
+
+
+def cegah_sleep(aktif: bool):
+    """Cegah Windows masuk sleep selama scraping (layar boleh mati)."""
+    if os.name != "nt":
+        return
+    try:
+        import ctypes
+        ES_CONTINUOUS, ES_SYSTEM_REQUIRED = 0x80000000, 0x00000001
+        ctypes.windll.kernel32.SetThreadExecutionState(
+            ES_CONTINUOUS | (ES_SYSTEM_REQUIRED if aktif else 0))
+    except Exception:
+        pass
+
+
 def ekstrak_json(teks: str):
     """Ambil objek JSON dari teks halaman, walau ada teks tambahan di sekitarnya."""
     if not teks:
@@ -130,7 +182,8 @@ def ekstrak_json(teks: str):
 class Fetcher:
     def __init__(self, cache_dir: Path, mode="browser", delay=2.0, backoff=30.0,
                  max_retries=3, max_gagal_beruntun=5, contact="", headless=False,
-                 allow_network=True, browser="chrome", browser_path="", port=9222):
+                 allow_network=True, browser="chrome", browser_path="", port=9222,
+                 otomatis=False, istirahat_tiap=300, istirahat_menit=3.0):
         self.cache_dir = cache_dir
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.mode = mode
@@ -144,6 +197,9 @@ class Fetcher:
         self.browser = browser
         self.browser_path = browser_path
         self.port = port
+        self.otomatis = otomatis              # True: tidak pernah menunggu Enter / berhenti sendiri
+        self.istirahat_tiap = istirahat_tiap  # istirahat tiap N request ke server
+        self.istirahat_menit = istirahat_menit
         self.gagal_beruntun = 0
         self.jumlah_request = 0
         self._session = None
@@ -163,14 +219,16 @@ class Fetcher:
             return None
 
         url = API + path
-        for percobaan in range(1, self.max_retries + 1):
+        percobaan = ronde_blokir = ronde_gagal = 0
+        while True:
             status, data = self._ambil(url)
-            self.jumlah_request += 1
-            time.sleep(self.delay)
+            self._jeda_setelah_request()
 
             if status == 200 and data is not None:
                 cp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
                 self.gagal_beruntun = 0
+                if ronde_blokir or ronde_gagal:
+                    catat("   -> berhasil lagi, lanjut.")
                 return data
 
             if status == 404:  # memang tidak ada (mis. laga tanpa statistik)
@@ -178,20 +236,40 @@ class Fetcher:
                 self.gagal_beruntun = 0
                 return None
 
-            terblokir = status in (403, 429, "verifikasi")
-            if terblokir and self.mode == "browser" and interaktif():
-                print(f"\n  >> Akses ditolak (status {status}) untuk {path}.")
-                self._buka_beranda()
-                tunggu_pengguna("Halaman sofascore.com dimuat ulang. Jika ada verifikasi "
-                                "\"I'm not a robot\", selesaikan MANUAL sampai isi halaman "
-                                "(jadwal/skor) tampil normal.")
-                continue
+            if status in (403, 429, "verifikasi"):
+                ronde_blokir += 1
+                if self.otomatis:
+                    self._tunggu_blokir(path, status, ronde_blokir)
+                    continue
+                if self.mode == "browser" and interaktif() and ronde_blokir <= self.max_retries:
+                    print(f"\n  >> Akses ditolak (status {status}) untuk {path}.")
+                    self._buka_beranda()
+                    tunggu_pengguna("Halaman sofascore.com dimuat ulang. Jika ada verifikasi "
+                                    "\"I'm not a robot\", selesaikan MANUAL sampai isi halaman "
+                                    "(jadwal/skor) tampil normal.")
+                    continue
 
+            percobaan += 1
             print(f"  [!] {path} -> status {status} (percobaan {percobaan}/{self.max_retries})")
             if percobaan < self.max_retries:
                 time.sleep(self.backoff * percobaan)
+                continue
+
+            if self.otomatis and ronde_gagal < len(JEDA_GAGAL):
+                # Koneksi/browser bermasalah (mis. WARP putus): tunggu lalu ulangi URL yang sama.
+                catat(f"[!] {path} gagal terus (status {status}). Cek WARP/internet; "
+                      "script menunggu lalu mencoba lagi.")
+                self.tutup()  # browser dibuka ulang dengan bersih pada percobaan berikutnya
+                tidur(JEDA_GAGAL[ronde_gagal], "koneksi bermasalah,")
+                ronde_gagal += 1
+                percobaan = 0
+                continue
+            break
 
         self.gagal_beruntun += 1
+        if self.otomatis:
+            catat(f"[!] {path} dilewati dulu; akan dicoba lagi di putaran berikutnya.")
+            return None
         if self.gagal_beruntun >= self.max_gagal_beruntun:
             raise Terblokir(
                 f"{self.gagal_beruntun} permintaan berturut-turut gagal. Kemungkinan akses "
@@ -199,6 +277,27 @@ class Fetcher:
                 "waktu, atau hubungi SofaScore dengan bukti izin Anda untuk akses resmi."
             )
         return None
+
+    def _jeda_setelah_request(self):
+        """Jeda acak antar request + istirahat berkala, agar tidak memicu challenge."""
+        self.jumlah_request += 1
+        time.sleep(self.delay * random.uniform(0.7, 1.5))
+        if self.istirahat_tiap and self.jumlah_request % self.istirahat_tiap == 0:
+            tidur(self.istirahat_menit * 60, f"sudah {self.jumlah_request} request,")
+
+    def _tunggu_blokir(self, path, status, ronde):
+        """Saat kena challenge: muat ulang halaman, istirahat bertahap, lalu coba lagi."""
+        detik = JEDA_BLOKIR[min(ronde, len(JEDA_BLOKIR)) - 1]
+        catat(f"[BLOKIR] {path} -> status {status} (ke-{ronde}). Tidak perlu apa-apa; script akan "
+              "mencoba lagi sendiri. Jika Anda di dekat laptop dan ada \"I'm not a robot\" di "
+              "browser, boleh diselesaikan.")
+        bunyi()
+        if self.mode == "browser":
+            if ronde % 3 == 0:  # sesekali mulai dengan browser yang benar-benar baru
+                self.tutup()
+            else:
+                self._buka_beranda()
+        tidur(detik, "menunggu challenge reda,")
 
     def _ambil(self, url):
         return self._ambil_browser(url) if self.mode == "browser" else self._ambil_requests(url)
@@ -273,13 +372,20 @@ class Fetcher:
                     break
                 time.sleep(0.5)
             if not self._devtools_hidup():
-                raise SystemExit(
-                    f"\nBrowser terbuka tetapi port {self.port} tidak bisa dihubungi. Tutup semua jendela\n"
-                    "browser yang dibuka script sebelumnya, lalu jalankan lagi (atau pakai --port 9333).")
+                self.tutup()
+                # Bukan SystemExit: di mode otomatis ini dianggap gangguan sementara dan dicoba lagi.
+                raise RuntimeError(
+                    f"port {self.port} tidak bisa dihubungi. Jika terus terjadi, tutup semua jendela "
+                    "browser yang dibuka script sebelumnya (atau pakai --port 9333).")
             time.sleep(3)
         self._sambung_tab()
-        tunggu_pengguna("Lihat jendela browser. Jika ada verifikasi \"I'm not a robot\" / pop-up "
-                        "cookie, selesaikan dulu sampai isi sofascore.com (jadwal/skor) tampil normal.")
+        if self.otomatis:
+            catat("Browser siap. Jangan tutup jendelanya (boleh di-minimize).")
+            time.sleep(8)
+        else:
+            tunggu_pengguna("Lihat jendela browser. Jika ada verifikasi \"I'm not a robot\" / "
+                            "pop-up cookie, selesaikan dulu sampai isi sofascore.com (jadwal/skor) "
+                            "tampil normal.")
 
     def _sambung_tab(self):
         host = urlparse(BERANDA).netloc
@@ -534,7 +640,7 @@ def jelajah(f: Fetcher, liga_pilih, musim_pilih, dengan_odds, cerewet=True):
                     dilewati.append({"league": nama, "season": label_musim(m), "event_id": e.get("id"),
                                      "alasan": f"status: {(e.get('status') or {}).get('type')}"})
             if cerewet:
-                print(f"== {nama} {label_musim(m)}: {len(selesai)} laga selesai ==")
+                catat(f"== {nama} {label_musim(m)}: {len(selesai)} laga selesai ==")
             for i, ev in enumerate(sorted(selesai, key=lambda e: e.get("startTimestamp") or 0), 1):
                 baris_laga = meta_laga(ev, nama, label_musim(m))
                 stat = parse_statistik(f.get(f"/event/{ev['id']}/statistics"), kamus)
@@ -546,7 +652,7 @@ def jelajah(f: Fetcher, liga_pilih, musim_pilih, dengan_odds, cerewet=True):
                     baris_laga.update(parse_odds(f.get(f"/event/{ev['id']}/odds/1/all")))
                 baris.append(baris_laga)
                 if cerewet and i % 50 == 0:
-                    print(f"   {i}/{len(selesai)} laga | total request: {f.jumlah_request}")
+                    catat(f"   {i}/{len(selesai)} laga | total request: {f.jumlah_request}")
     return pd.DataFrame(baris), pd.DataFrame(dilewati), kamus
 
 
@@ -711,6 +817,61 @@ def cek_koneksi(contact=""):
 
 
 # --------------------------------------------------------------------------
+def kumpulkan(a, cache: Path, opsi_browser: dict):
+    """Isi cache sampai tuntas. Mode otomatis (default) tidak berhenti karena challenge,
+    koneksi putus, atau error tak terduga: script beristirahat lalu melanjutkan sendiri."""
+    otomatis = not a.manual
+    jumlah_file = lambda: sum(1 for _ in cache.glob("*.json"))
+    total_request, putaran, crash = 0, 0, 0
+    catat("Mengumpulkan data. Semua respons disimpan ke cache; aman dihentikan (Ctrl+C) kapan saja.")
+    if otomatis:
+        catat("Mode otomatis: boleh ditinggal. Riwayat kejadian ada di log_scraping.txt.")
+    cegah_sleep(True)
+    try:
+        while True:
+            putaran += 1
+            sebelum = jumlah_file()
+            f = Fetcher(cache, a.mode, a.delay, a.backoff, otomatis=otomatis,
+                        istirahat_tiap=a.istirahat_tiap, istirahat_menit=a.istirahat_menit,
+                        **opsi_browser)
+            tuntas = False
+            try:
+                jelajah(f, a.leagues, a.seasons, a.with_odds, cerewet=True)  # hanya mengisi cache
+                tuntas = True
+            except Terblokir as e:  # hanya terjadi di mode --manual
+                catat(f"[BERHENTI] {e}")
+                return
+            except Exception as e:
+                crash += 1
+                import traceback
+                if LOG_PATH is not None:
+                    with open(LOG_PATH, "a", encoding="utf-8") as fh:
+                        fh.write(traceback.format_exc())
+                catat(f"[ERROR] {type(e).__name__}: {e}")
+                if not otomatis or crash > 20:
+                    catat("Terlalu banyak error; berhenti. Jalankan perintah yang sama untuk melanjutkan.")
+                    return
+                catat(f"Script dimulai ulang otomatis (ke-{crash}); data yang sudah ada tetap di cache.")
+                time.sleep(60)
+            finally:
+                f.tutup()
+                total_request += f.jumlah_request
+
+            baru = jumlah_file() - sebelum
+            if tuntas and (baru == 0 or not otomatis):
+                break
+            if tuntas:
+                # Putaran ulang: hanya URL yang tadi gagal/dilewati yang diminta lagi.
+                catat(f"Putaran {putaran} selesai ({baru} data baru). Mengecek ulang data yang "
+                      "sempat gagal...")
+        catat("SELESAI: semua data yang tersedia sudah terkumpul.")
+    except KeyboardInterrupt:
+        catat("[DIHENTIKAN] Data yang sudah terkumpul aman di cache.")
+    finally:
+        cegah_sleep(False)
+        catat(f"Total request sesi ini: {total_request}")
+
+
 def main():
     try:  # cegah error cetak huruf non-ASCII di konsol Windows
         sys.stdout.reconfigure(errors="replace")
@@ -728,7 +889,12 @@ def main():
     p.add_argument("--port", type=int, default=9222,
                    help="port debugging browser (ganti jika 9222 sudah dipakai program lain)")
     p.add_argument("--headless", action="store_true", help="browser tanpa jendela (tidak disarankan)")
-    p.add_argument("--delay", type=float, default=2.0, help="jeda antar request (detik)")
+    p.add_argument("--delay", type=float, default=2.5, help="jeda rata-rata antar request (detik)")
+    p.add_argument("--istirahat-tiap", type=int, default=300,
+                   help="istirahat setiap N request agar tidak memicu challenge (0 = tanpa istirahat)")
+    p.add_argument("--istirahat-menit", type=float, default=3.0, help="lama istirahat berkala (menit)")
+    p.add_argument("--manual", action="store_true",
+                   help="perilaku lama: berhenti & minta Enter saat kena challenge (tidak bisa ditinggal)")
     p.add_argument("--backoff", type=float, default=30.0, help="jeda dasar saat gagal (detik)")
     p.add_argument("--with-odds", action="store_true", help="ikut ambil odds 1X2 (request 2x lipat)")
     p.add_argument("--contact", default="", help="email Anda, dicantumkan di identitas request")
@@ -746,6 +912,8 @@ def main():
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
     cache = out / "cache_json"
+    global LOG_PATH
+    LOG_PATH = out / "log_scraping.txt"
     opsi_browser = dict(contact=a.contact, headless=a.headless,
                         browser=a.browser, browser_path=a.browser_path, port=a.port)
 
@@ -785,17 +953,7 @@ def main():
         return
 
     if not a.build_only:
-        f = Fetcher(cache, a.mode, a.delay, a.backoff, **opsi_browser)
-        print("Mengumpulkan data. Semua respons disimpan ke cache; aman dihentikan (Ctrl+C) kapan saja.")
-        try:
-            jelajah(f, a.leagues, a.seasons, a.with_odds, cerewet=True)  # hanya mengisi cache
-        except Terblokir as e:
-            print(f"\n[BERHENTI] {e}")
-        except KeyboardInterrupt:
-            print("\n[DIHENTIKAN] Data yang sudah terkumpul aman di cache.")
-        finally:
-            f.tutup()
-            print(f"Total request sesi ini: {f.jumlah_request}")
+        kumpulkan(a, cache, opsi_browser)
 
     print("\nMembangun CSV dari cache...")
     offline = Fetcher(cache, allow_network=False)
