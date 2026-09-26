@@ -3,10 +3,12 @@ Scraper statistik pertandingan SofaScore - 5 Liga Top Eropa (2018/19 - 2025/26)
 Untuk keperluan penelitian, dengan izin dari SofaScore.
 
 Cara kerja mode browser (default):
-  1. Selenium membuka https://www.sofascore.com/ di Chrome/Edge seperti pengunjung
-     biasa. Pop-up cookie atau verifikasi bisa diselesaikan manual di jendela itu.
-  2. Data diminta dengan fetch() dari DALAM halaman tersebut ke /api/v1/..., sama
-     seperti cara situs SofaScore memuat datanya sendiri.
+  1. Script membuka Chrome/Edge BIASA (bukan Chrome "automated test software" milik
+     Selenium) ke https://www.sofascore.com/ dengan profil tersendiri. Verifikasi
+     "I'm not a robot" / pop-up cookie diselesaikan manual oleh Anda di jendela itu.
+  2. Script terhubung ke tab tersebut lewat port debugging Chrome (DevTools Protocol)
+     dan meminta data dengan fetch() dari DALAM halaman ke /api/v1/..., sama seperti
+     cara situs SofaScore memuat datanya sendiri.
   3. Setiap respons disimpan ke cache, jadi script aman dihentikan (Ctrl+C) dan
      dilanjutkan kapan saja tanpa mengulang request yang sudah berhasil.
 
@@ -19,11 +21,15 @@ Contoh:
 
 import argparse
 import json
+import os
 import re
+import shutil
+import subprocess
 import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlparse
 
 import numpy as np
 import pandas as pd
@@ -46,18 +52,41 @@ SEASONS = ["18/19", "19/20", "20/21", "21/22", "22/23", "23/24", "24/25", "25/26
 META_SISI = {"team_id", "team", "goals", "goals_ht"}
 
 # Dijalankan di dalam tab sofascore.com: minta data API dengan cookie browser itu sendiri.
-SKRIP_FETCH = """
-const url = arguments[0], selesai = arguments[arguments.length - 1];
-const ctrl = new AbortController();
-const batas = setTimeout(() => ctrl.abort(), 45000);
-fetch(url, {credentials: "include", headers: {"Accept": "application/json"}, signal: ctrl.signal})
-  .then(r => r.text().then(t => { clearTimeout(batas); selesai([r.status, t]); }))
-  .catch(e => { clearTimeout(batas); selesai(["koneksi: " + e, ""]); });
-"""
+# %s diganti URL tujuan (dalam format JSON).
+SKRIP_FETCH = """(async (url) => {
+  const ctrl = new AbortController();
+  const batas = setTimeout(() => ctrl.abort(), 45000);
+  try {
+    const r = await fetch(url, {credentials: "include", headers: {"Accept": "application/json"},
+                                signal: ctrl.signal});
+    return [r.status, await r.text()];
+  } catch (e) {
+    return ["koneksi: " + e, ""];
+  } finally {
+    clearTimeout(batas);
+  }
+})(%s)"""
 
 
 class Terblokir(Exception):
     pass
+
+
+def cari_browser(nama: str, path_manual: str = ""):
+    """Cari lokasi chrome.exe / msedge.exe di tempat instalasi yang umum."""
+    if path_manual:
+        return path_manual if Path(path_manual).exists() else None
+    relatif = {"chrome": ["Google/Chrome/Application/chrome.exe"],
+               "edge": ["Microsoft/Edge/Application/msedge.exe"]}[nama]
+    kandidat = [Path(os.environ[v]) / r
+                for v in ("PROGRAMFILES", "PROGRAMFILES(X86)", "LOCALAPPDATA") if os.environ.get(v)
+                for r in relatif]
+    kandidat += {"chrome": [Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")],
+                 "edge": [Path("/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge")]}[nama]
+    perintah = {"chrome": ["chrome", "google-chrome", "google-chrome-stable", "chromium", "chromium-browser"],
+                "edge": ["msedge", "microsoft-edge", "microsoft-edge-stable"]}[nama]
+    kandidat += [Path(p) for p in map(shutil.which, perintah) if p]
+    return next((str(k) for k in kandidat if k.exists()), None)
 
 
 def identitas_ua(contact: str = "") -> str:
@@ -101,7 +130,7 @@ def ekstrak_json(teks: str):
 class Fetcher:
     def __init__(self, cache_dir: Path, mode="browser", delay=2.0, backoff=30.0,
                  max_retries=3, max_gagal_beruntun=5, contact="", headless=False,
-                 allow_network=True, browser="chrome", browser_path=""):
+                 allow_network=True, browser="chrome", browser_path="", port=9222):
         self.cache_dir = cache_dir
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.mode = mode
@@ -114,10 +143,13 @@ class Fetcher:
         self.allow_network = allow_network
         self.browser = browser
         self.browser_path = browser_path
+        self.port = port
         self.gagal_beruntun = 0
         self.jumlah_request = 0
         self._session = None
-        self._driver = None
+        self._proses = None   # proses browser yang dibuka script ini
+        self._ws = None       # koneksi DevTools ke tab sofascore.com
+        self._id_pesan = 0
 
     def _path_cache(self, path: str) -> Path:
         return self.cache_dir / (path.strip("/").replace("/", "__") + ".json")
@@ -150,8 +182,9 @@ class Fetcher:
             if terblokir and self.mode == "browser" and interaktif():
                 print(f"\n  >> Akses ditolak (status {status}) untuk {path}.")
                 self._buka_beranda()
-                tunggu_pengguna("Lihat jendela browser. Jika ada halaman verifikasi, "
-                                "selesaikan secara MANUAL.")
+                tunggu_pengguna("Halaman sofascore.com dimuat ulang. Jika ada verifikasi "
+                                "\"I'm not a robot\", selesaikan MANUAL sampai isi halaman "
+                                "(jadwal/skor) tampil normal.")
                 continue
 
             print(f"  [!] {path} -> status {status} (percobaan {percobaan}/{self.max_retries})")
@@ -192,56 +225,112 @@ class Fetcher:
             self._catat_debug(url, r.status_code, r.text)
         return (r.status_code, None)
 
-    # ---- mode browser (default) ----
-    def _mulai_browser(self):
-        from selenium import webdriver
-        pakai_edge = self.browser == "edge"
-        opsi = webdriver.EdgeOptions() if pakai_edge else webdriver.ChromeOptions()
-        # Profil browser tersendiri: cookie & hasil verifikasi tersimpan antar sesi.
-        profil = (self.cache_dir.parent / f"profil_{self.browser}").resolve()
-        opsi.add_argument(f"--user-data-dir={profil}")
-        opsi.add_argument("--window-size=1200,900")
-        if self.browser_path:
-            opsi.binary_location = self.browser_path
-        if self.headless:
-            opsi.add_argument("--headless=new")
-        print(f"Membuka browser {self.browser} (profil: {profil})")
+    # ---- mode browser (default): browser BIASA + DevTools Protocol ----
+    def _http_lokal(self, jalur, metode="GET"):
+        """Akses endpoint DevTools browser di 127.0.0.1 (tanpa proxy sistem)."""
+        import requests
+        s = requests.Session()
+        s.trust_env = False
+        r = s.request(metode, f"http://127.0.0.1:{self.port}{jalur}", timeout=5)
+        r.raise_for_status()
+        return r.json()
+
+    def _devtools_hidup(self) -> bool:
         try:
-            self._driver = (webdriver.Edge if pakai_edge else webdriver.Chrome)(options=opsi)
-        except Exception as e:
-            raise SystemExit(
-                f"\nGagal membuka browser {self.browser}: {str(e).strip().splitlines()[0]}\n"
-                "Periksa: (1) browser sudah terpasang, (2) jendela browser dari run sebelumnya\n"
-                "sudah ditutup semua (profil tidak boleh dipakai dua kali), (3) coba\n"
-                "--browser edge, atau --browser-path jika browser tidak di lokasi standar.")
-        self._driver.set_script_timeout(60)
-        self._buka_beranda()
-        tunggu_pengguna("Browser sudah membuka sofascore.com. Tutup pop-up cookie / "
-                        "selesaikan verifikasi jika ada.")
+            self._http_lokal("/json/version")
+            return True
+        except Exception:
+            return False
+
+    def _sambung_ws(self, alamat):
+        import websocket
+        return websocket.create_connection(alamat, timeout=60, suppress_origin=True,
+                                           http_no_proxy=["127.0.0.1", "localhost"])
+
+    def _mulai_browser(self):
+        if self._devtools_hidup():
+            print(f"Memakai jendela browser yang sudah terbuka (port {self.port}).")
+        else:
+            exe = cari_browser(self.browser, self.browser_path)
+            if not exe:
+                raise SystemExit(
+                    f"\nBrowser {self.browser} tidak ditemukan. Pasang browsernya, coba --browser edge,\n"
+                    "atau isi --browser-path dengan lokasi chrome.exe / msedge.exe.")
+            # Profil tersendiri: cookie & hasil verifikasi tersimpan untuk run berikutnya.
+            profil = (self.cache_dir.parent / f"profil_{self.browser}").resolve()
+            argumen = [exe, f"--remote-debugging-port={self.port}", f"--user-data-dir={profil}",
+                       "--no-first-run", "--no-default-browser-check", "--window-size=1200,900"]
+            if self.headless:
+                argumen.append("--headless=new")
+            argumen.append(BERANDA)
+            print(f"Membuka {self.browser} biasa (profil: {profil})")
+            # Grup proses terpisah agar Ctrl+C di terminal tidak ikut mematikan browser.
+            bendera = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
+            self._proses = subprocess.Popen(argumen, stdout=subprocess.DEVNULL,
+                                            stderr=subprocess.DEVNULL, creationflags=bendera)
+            for _ in range(60):
+                if self._devtools_hidup() or self._proses.poll() is not None:
+                    break
+                time.sleep(0.5)
+            if not self._devtools_hidup():
+                raise SystemExit(
+                    f"\nBrowser terbuka tetapi port {self.port} tidak bisa dihubungi. Tutup semua jendela\n"
+                    "browser yang dibuka script sebelumnya, lalu jalankan lagi (atau pakai --port 9333).")
+            time.sleep(3)
+        self._sambung_tab()
+        tunggu_pengguna("Lihat jendela browser. Jika ada verifikasi \"I'm not a robot\" / pop-up "
+                        "cookie, selesaikan dulu sampai isi sofascore.com (jadwal/skor) tampil normal.")
+
+    def _sambung_tab(self):
+        host = urlparse(BERANDA).netloc
+        tab = next((t for t in self._http_lokal("/json/list")
+                    if t.get("type") == "page" and host in t.get("url", "")), None)
+        if tab is None:  # belum ada tab sofascore.com -> buka tab baru
+            tab = self._http_lokal(f"/json/new?{BERANDA}", "PUT")
+            time.sleep(5)
+        self._ws = self._sambung_ws(tab["webSocketDebuggerUrl"])
+
+    def _perintah(self, metode, **params):
+        """Kirim satu perintah DevTools ke tab dan tunggu balasannya."""
+        self._id_pesan += 1
+        self._ws.send(json.dumps({"id": self._id_pesan, "method": metode, "params": params}))
+        while True:
+            pesan = json.loads(self._ws.recv())
+            if pesan.get("id") == self._id_pesan:
+                break
+        if "error" in pesan:
+            raise RuntimeError(pesan["error"].get("message"))
+        return pesan.get("result", {})
+
+    def _jalankan_js(self, ekspresi):
+        hasil = self._perintah("Runtime.evaluate", expression=ekspresi,
+                               awaitPromise=True, returnByValue=True)
+        if "exceptionDetails" in hasil:
+            raise RuntimeError(hasil["exceptionDetails"].get("text", "error JavaScript"))
+        return hasil.get("result", {}).get("value")
 
     def _buka_beranda(self):
-        if self._driver is None:
+        if self._ws is None:
             return
         try:
-            self._driver.get(BERANDA)
+            self._perintah("Page.navigate", url=BERANDA)
         except Exception as e:
             print(f"  [!] gagal membuka {BERANDA}: {type(e).__name__}")
-        time.sleep(4)  # beri waktu halaman selesai dimuat
+        time.sleep(5)  # beri waktu halaman selesai dimuat
 
     def _ambil_browser(self, url):
-        if self._driver is None:
-            self._mulai_browser()
         try:
+            if self._ws is None:
+                self._mulai_browser()
             # fetch() harus dijalankan dari halaman sofascore.com (satu origin dengan API)
-            if not self._driver.current_url.startswith(BERANDA.rstrip("/")):
+            asal = urlparse(BERANDA)
+            if self._jalankan_js("location.origin") != f"{asal.scheme}://{asal.netloc}":
                 self._buka_beranda()
-            status, teks = self._driver.execute_async_script(SKRIP_FETCH, url)
+            status, teks = self._jalankan_js(SKRIP_FETCH % json.dumps(url))
         except Exception as e:
-            nama = type(e).__name__
-            if nama in ("NoSuchWindowException", "InvalidSessionIdException"):
-                print("  [!] Jendela browser tertutup, akan dibuka ulang.")
-                self.tutup()
-            return (f"browser: {nama}", None)
+            print(f"  [!] koneksi ke browser terputus ({type(e).__name__}); akan disambung ulang.")
+            self._putus_ws()
+            return (f"browser: {type(e).__name__}", None)
 
         if status == 200:
             data = ekstrak_json(teks)
@@ -260,13 +349,28 @@ class Fetcher:
             fh.write(f"[{datetime.now():%Y-%m-%d %H:%M:%S}] status={status} url={url}\n  {potongan}\n")
         print(f"      cuplikan respons: {potongan[:150]!r}")
 
-    def tutup(self):
-        if self._driver is not None:
+    def _putus_ws(self):
+        if self._ws is not None:
             try:
-                self._driver.quit()
+                self._ws.close()
             except Exception:
                 pass
-            self._driver = None
+            self._ws = None
+
+    def tutup(self):
+        """Tutup koneksi; browser ditutup rapi hanya jika dibuka oleh script ini."""
+        self._putus_ws()
+        if self._proses is None:
+            return
+        if self._proses.poll() is None:
+            try:  # tutup rapi agar cookie hasil verifikasi tersimpan di profil
+                ws = self._sambung_ws(self._http_lokal("/json/version")["webSocketDebuggerUrl"])
+                ws.send(json.dumps({"id": 1, "method": "Browser.close"}))
+                ws.close()
+                self._proses.wait(timeout=10)
+            except Exception:
+                self._proses.terminate()
+        self._proses = None
 
 
 # --------------------------------------------------------------------------
@@ -621,6 +725,8 @@ def main():
                    help="browser yang dipakai mode browser (default chrome)")
     p.add_argument("--browser-path", default="",
                    help="lokasi file chrome.exe/msedge.exe jika tidak di lokasi standar")
+    p.add_argument("--port", type=int, default=9222,
+                   help="port debugging browser (ganti jika 9222 sudah dipakai program lain)")
     p.add_argument("--headless", action="store_true", help="browser tanpa jendela (tidak disarankan)")
     p.add_argument("--delay", type=float, default=2.0, help="jeda antar request (detik)")
     p.add_argument("--backoff", type=float, default=30.0, help="jeda dasar saat gagal (detik)")
@@ -641,7 +747,7 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
     cache = out / "cache_json"
     opsi_browser = dict(contact=a.contact, headless=a.headless,
-                        browser=a.browser, browser_path=a.browser_path)
+                        browser=a.browser, browser_path=a.browser_path, port=a.port)
 
     if a.probe:
         # retry pendek agar probe cepat memberi kabar
@@ -667,6 +773,8 @@ def main():
                       "lalu jalankan --cek-koneksi.")
         except Terblokir as e:
             print(f"\n[BERHENTI] {e}")
+        except KeyboardInterrupt:
+            print("\n[DIHENTIKAN] Probe dihentikan.")
         finally:
             f.tutup()
         contoh = sorted(cache.glob("*.json"))

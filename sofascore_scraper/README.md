@@ -7,18 +7,22 @@ dan Ligue 1 dari SofaScore untuk keperluan penelitian (dengan izin SofaScore).
 
 Seperti scraping yang pernah kamu lakukan dulu, laptop akan **membuka browser sendiri**:
 
-1. Chrome terbuka ke `https://www.sofascore.com/` seperti pengunjung biasa.
-2. Kalau muncul pop-up cookie atau halaman verifikasi, selesaikan manual di jendela itu,
-   lalu tekan **Enter** di terminal.
-3. Script mengambil data dari dalam halaman itu (lewat `fetch()` ke `/api/v1/...`),
-   sama seperti cara situs SofaScore memuat datanya sendiri.
+1. Script membuka **Chrome biasa** ke `https://www.sofascore.com/`, dengan profil
+   tersendiri di `data_sofascore/profil_chrome/`.
+2. Kalau muncul verifikasi *"I'm not a robot"* atau pop-up cookie, selesaikan manual di
+   jendela itu sampai isi halaman (jadwal/skor) tampil normal, lalu tekan **Enter** di terminal.
+3. Script terhubung ke tab itu lewat port debugging Chrome (port 9222) dan mengambil data
+   dari dalam halaman (lewat `fetch()` ke `/api/v1/...`), sama seperti cara situs
+   SofaScore memuat datanya sendiri.
 4. Semua respons disimpan ke `data_sofascore/cache_json/`. Script aman dihentikan
    (Ctrl+C) dan dijalankan ulang; yang sudah terambil tidak diminta lagi.
 5. Di akhir, CSV dibangun otomatis dari cache.
 
-> Kenapa versi lama gagal? Versi lama membuka URL `api.sofascore.com/...` langsung di tab
-> browser. SofaScore menolak permintaan seperti itu (403 / halaman verifikasi), karena
-> situsnya sendiri tidak pernah memuat data dengan cara itu.
+> Kenapa tidak memakai Selenium? Chrome yang dibuka Selenium ditandai sebagai browser
+> otomatis (bar *"Chrome is being controlled by automated test software"*,
+> `navigator.webdriver = true`). SofaScore membalasnya dengan `403 "challenge"`, dan
+> verifikasinya tidak pernah lolos walaupun sudah dicentang. Chrome yang dibuka biasa
+> tidak memiliki tanda itu.
 
 ## 1. Persiapan (sekali saja)
 
@@ -31,8 +35,7 @@ Seperti scraping yang pernah kamu lakukan dulu, laptop akan **membuka browser se
    pip install -r requirements.txt
    ```
 
-   Driver browser (chromedriver) tidak perlu diunduh manual; Selenium mengurusnya
-   otomatis saat pertama kali jalan (butuh internet).
+   Tidak perlu Selenium maupun chromedriver.
 
 ## 2. Cek koneksi & uji kecil (probe)
 
@@ -76,8 +79,9 @@ python sofascore_scraper.py --build-only
 (±20 jam jika memakai `--with-odds`). Laptop jangan sampai *sleep*; kalau terputus,
 cukup jalankan perintah yang sama lagi dan script akan melanjutkan dari cache.
 
-Selama berjalan, **jangan tutup dan jangan pakai jendela browser yang dibuka script**.
-Kalau jendelanya tertutup, script akan membukanya lagi.
+Selama berjalan, **jangan tutup dan jangan pakai jendela browser yang dibuka script**
+(boleh di-*minimize*). Kalau jendelanya tertutup, script akan membukanya lagi. Browser
+ditutup otomatis saat script selesai.
 
 ## 4. Hasil (folder `data_sofascore/`)
 
@@ -105,6 +109,7 @@ persen. Pakai kolom `..._pct` untuk persentasenya.
 | `--seasons` | `18/19 … 25/26` (default semua) |
 | `--browser chrome\|edge` | browser yang dipakai (default chrome) |
 | `--browser-path` | lokasi `chrome.exe`/`msedge.exe` jika tidak di tempat standar |
+| `--port` | port debugging browser (default 9222) |
 | `--delay` | jeda antar request, detik (default 2) |
 | `--with-odds` | ikut ambil odds 1X2 (request jadi 2×) |
 | `--contact` | email kamu, dicantumkan di identitas request mode requests |
@@ -147,9 +152,10 @@ tidak bisa dibuka atau muncul halaman blokir, masalahnya ada di jaringan, bukan 
 
 | Gejala | Solusi |
 |---|---|
-| `Gagal membuka browser ...` | Pastikan Chrome terpasang; tutup semua jendela Chrome yang dibuka script sebelumnya; atau coba `--browser edge`. |
-| `This version of ChromeDriver only supports ...` | Update Chrome ke versi terbaru, lalu `pip install -U selenium`. |
-| Muncul `Akses ditolak (status 403)` | Lihat jendela browser, selesaikan verifikasi manual, tekan Enter. |
+| `Browser chrome tidak ditemukan` | Pasang Chrome, coba `--browser edge`, atau isi `--browser-path "C:\...\chrome.exe"`. |
+| `port 9222 tidak bisa dihubungi` | Tutup semua jendela browser yang dibuka script sebelumnya, lalu jalankan lagi; atau pakai `--port 9333`. |
+| Muncul `Akses ditolak (status 403)` / `"reason": "challenge"` | Di jendela browser, selesaikan verifikasi sampai isi halaman tampil normal, lalu tekan Enter. |
+| Verifikasi sudah dicentang tapi isi sofascore.com tetap kosong | Kemungkinan IP WARP dicurigai. Di aplikasi Cloudflare, ubah **Mode** ke **DNS only** (1.1.1.1), jalankan `--cek-koneksi`; kalau [2/3] tetap `berhasil`, coba lagi. |
 | `[BERHENTI] 5 permintaan berturut-turut gagal` | Tunggu 15–30 menit lalu jalankan lagi, dan naikkan jeda (`--delay 4`). |
 | `'python' is not recognized` | Python belum masuk PATH; instal ulang dan centang "Add python.exe to PATH". |
 
