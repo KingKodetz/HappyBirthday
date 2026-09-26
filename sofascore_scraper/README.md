@@ -68,10 +68,11 @@ lalu membangun CSV gabungan di akhir. **Boleh ditinggal tidur**:
 - Error tak terduga: script dimulai ulang otomatis dari cache.
 - Data yang sempat gagal dicoba lagi di putaran berikutnya secara otomatis.
 - Laptop dicegah masuk *sleep* selama berjalan (layar boleh mati).
-- Setiap 300 request, script istirahat 3 menit agar tidak memicu challenge.
+- Ritme pelan (±7 detik per request, istirahat 5 menit tiap 100 request) agar sesuai batas SofaScore.
+- Setiap laga yang berhasil diambil tampil di layar, mis. `(51/380) Arsenal 2-0 Chelsea | 2018-08-11 14:00 | berhasil`.
 - Semua kejadian dicatat di `data_sofascore/log_scraping.txt`.
 
-**Perkiraan waktu:** ±14.000 laga ≈ **12–15 jam**. Kalau pagi belum selesai, jalankan
+**Perkiraan waktu:** ±14.000 laga ≈ **1,5–2 hari**. Kalau pagi belum selesai, jalankan
 lagi perintah yang sama; script melanjutkan dari cache.
 
 Sebelum ditinggal: **WARP tetap Connected**, laptop dicolok charger, dan jendela
@@ -104,8 +105,8 @@ persen. Pakai kolom `..._pct` untuk persentasenya.
 | `--browser chrome\|edge` | browser yang dipakai (default chrome) |
 | `--browser-path` | lokasi `chrome.exe`/`msedge.exe` jika tidak di tempat standar |
 | `--port` | port debugging browser (default 9222) |
-| `--delay` | jeda rata-rata antar request, detik (default 2,5) |
-| `--istirahat-tiap`, `--istirahat-menit` | istirahat berkala (default tiap 300 request, 3 menit) |
+| `--delay` | jeda rata-rata antar request, detik (default 7) |
+| `--istirahat-tiap`, `--istirahat-menit` | istirahat berkala (default tiap 100 request, 5 menit) |
 | `--manual` | perilaku lama: minta Enter saat challenge (tidak bisa ditinggal) |
 | `--with-odds` | ikut ambil odds 1X2 (request jadi 2×) |
 | `--contact` | email kamu, dicantumkan di identitas request mode requests |

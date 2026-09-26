@@ -643,6 +643,7 @@ def jelajah(f: Fetcher, liga_pilih, musim_pilih, dengan_odds, cerewet=True):
                 catat(f"== {nama} {label_musim(m)}: {len(selesai)} laga selesai ==")
             for i, ev in enumerate(sorted(selesai, key=lambda e: e.get("startTimestamp") or 0), 1):
                 baris_laga = meta_laga(ev, nama, label_musim(m))
+                sebelum = f.jumlah_request
                 stat = parse_statistik(f.get(f"/event/{ev['id']}/statistics"), kamus)
                 if not stat:
                     dilewati.append({"league": nama, "season": label_musim(m), "event_id": ev["id"],
@@ -651,8 +652,11 @@ def jelajah(f: Fetcher, liga_pilih, musim_pilih, dengan_odds, cerewet=True):
                 if dengan_odds:
                     baris_laga.update(parse_odds(f.get(f"/event/{ev['id']}/odds/1/all")))
                 baris.append(baris_laga)
-                if cerewet and i % 50 == 0:
-                    catat(f"   {i}/{len(selesai)} laga | total request: {f.jumlah_request}")
+                if cerewet and f.jumlah_request > sebelum:  # laga yang baru diambil (bukan dari cache)
+                    hasil = "berhasil" if stat else "statistik tidak tersedia"
+                    catat(f"   ({i}/{len(selesai)}) {baris_laga['home_team']} "
+                          f"{baris_laga['home_goals']}-{baris_laga['away_goals']} "
+                          f"{baris_laga['away_team']} | {baris_laga['date_utc']} | {hasil}")
     return pd.DataFrame(baris), pd.DataFrame(dilewati), kamus
 
 
@@ -889,10 +893,10 @@ def main():
     p.add_argument("--port", type=int, default=9222,
                    help="port debugging browser (ganti jika 9222 sudah dipakai program lain)")
     p.add_argument("--headless", action="store_true", help="browser tanpa jendela (tidak disarankan)")
-    p.add_argument("--delay", type=float, default=2.5, help="jeda rata-rata antar request (detik)")
-    p.add_argument("--istirahat-tiap", type=int, default=300,
+    p.add_argument("--delay", type=float, default=7.0, help="jeda rata-rata antar request (detik)")
+    p.add_argument("--istirahat-tiap", type=int, default=100,
                    help="istirahat setiap N request agar tidak memicu challenge (0 = tanpa istirahat)")
-    p.add_argument("--istirahat-menit", type=float, default=3.0, help="lama istirahat berkala (menit)")
+    p.add_argument("--istirahat-menit", type=float, default=5.0, help="lama istirahat berkala (menit)")
     p.add_argument("--manual", action="store_true",
                    help="perilaku lama: berhenti & minta Enter saat kena challenge (tidak bisa ditinggal)")
     p.add_argument("--backoff", type=float, default=30.0, help="jeda dasar saat gagal (detik)")
