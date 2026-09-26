@@ -187,7 +187,9 @@ class Fetcher:
         self.cache_dir = cache_dir
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.mode = mode
-        self.delay = delay
+        self.delay = delay            # jeda saat ini (menyesuaikan otomatis, lihat _sesuaikan_ritme)
+        self.delay_min = delay        # tidak akan lebih cepat dari ini
+        self.sukses_beruntun = 0
         self.backoff = backoff
         self.max_retries = max_retries
         self.max_gagal_beruntun = max_gagal_beruntun
@@ -227,6 +229,7 @@ class Fetcher:
             if status == 200 and data is not None:
                 cp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
                 self.gagal_beruntun = 0
+                self._sesuaikan_ritme(kena_blokir=False)
                 if ronde_blokir or ronde_gagal:
                     catat("   -> berhasil lagi, lanjut.")
                 return data
@@ -285,6 +288,20 @@ class Fetcher:
         if self.istirahat_tiap and self.jumlah_request % self.istirahat_tiap == 0:
             tidur(self.istirahat_menit * 60, f"sudah {self.jumlah_request} request,")
 
+    def _sesuaikan_ritme(self, kena_blokir: bool):
+        """Ritme adaptif: melambat saat kena challenge, pelan-pelan cepat lagi saat lancar."""
+        if kena_blokir:
+            self.sukses_beruntun = 0
+            lama, self.delay = self.delay, min(self.delay * 1.5, 30.0)
+            if self.delay != lama:
+                catat(f"   ritme diperlambat: {lama:.1f} -> {self.delay:.1f} detik per request")
+            return
+        self.sukses_beruntun += 1
+        if self.sukses_beruntun >= 200 and self.delay > self.delay_min:
+            self.sukses_beruntun = 0
+            lama, self.delay = self.delay, max(self.delay_min, self.delay * 0.9)
+            catat(f"   lancar 200 request, ritme dipercepat: {lama:.1f} -> {self.delay:.1f} detik")
+
     def _tunggu_blokir(self, path, status, ronde):
         """Saat kena challenge: muat ulang halaman, istirahat bertahap, lalu coba lagi."""
         detik = JEDA_BLOKIR[min(ronde, len(JEDA_BLOKIR)) - 1]
@@ -297,6 +314,7 @@ class Fetcher:
                 self.tutup()
             else:
                 self._buka_beranda()
+        self._sesuaikan_ritme(kena_blokir=True)
         tidur(detik, "menunggu challenge reda,")
 
     def _ambil(self, url):
@@ -641,6 +659,13 @@ def jelajah(f: Fetcher, liga_pilih, musim_pilih, dengan_odds, cerewet=True):
                                      "alasan": f"status: {(e.get('status') or {}).get('type')}"})
             if cerewet:
                 catat(f"== {nama} {label_musim(m)}: {len(selesai)} laga selesai ==")
+                sisa = sum(1 for e in selesai if not f._path_cache(f"/event/{e['id']}/statistics").exists())
+                if sisa and f.allow_network:
+                    menit = sisa * (1 + dengan_odds) * (f.delay + 1.0) / 60
+                    if f.istirahat_tiap:
+                        menit += sisa * (1 + dengan_odds) / f.istirahat_tiap * f.istirahat_menit
+                    catat(f"   perlu diambil: {sisa} laga, perkiraan ±{menit // 60:.0f} jam "
+                          f"{menit % 60:.0f} menit (ritme {f.delay:.1f} detik/request)")
             for i, ev in enumerate(sorted(selesai, key=lambda e: e.get("startTimestamp") or 0), 1):
                 baris_laga = meta_laga(ev, nama, label_musim(m))
                 sebelum = f.jumlah_request
@@ -827,6 +852,20 @@ def kumpulkan(a, cache: Path, opsi_browser: dict):
     otomatis = not a.manual
     jumlah_file = lambda: sum(1 for _ in cache.glob("*.json"))
     total_request, putaran, crash = 0, 0, 0
+    ritme_path = cache.parent / "ritme.json"
+
+    def simpan_ritme(nilai):
+        try:
+            ritme_path.write_text(json.dumps({"delay": nilai}), encoding="utf-8")
+        except OSError:
+            pass
+
+    try:  # lanjutkan ritme yang dipelajari dari run sebelumnya
+        ritme = float(json.loads(ritme_path.read_text(encoding="utf-8"))["delay"])
+    except (OSError, ValueError, KeyError, TypeError):
+        ritme = a.delay
+    if ritme > a.delay:
+        catat(f"Memakai ritme dari run sebelumnya: {ritme:.1f} detik per request.")
     catat("Mengumpulkan data. Semua respons disimpan ke cache; aman dihentikan (Ctrl+C) kapan saja.")
     if otomatis:
         catat("Mode otomatis: boleh ditinggal. Riwayat kejadian ada di log_scraping.txt.")
@@ -835,9 +874,10 @@ def kumpulkan(a, cache: Path, opsi_browser: dict):
         while True:
             putaran += 1
             sebelum = jumlah_file()
-            f = Fetcher(cache, a.mode, a.delay, a.backoff, otomatis=otomatis,
+            f = Fetcher(cache, a.mode, max(a.delay, ritme), a.backoff, otomatis=otomatis,
                         istirahat_tiap=a.istirahat_tiap, istirahat_menit=a.istirahat_menit,
                         **opsi_browser)
+            f.delay_min = a.delay  # boleh kembali secepat --delay setelah lama lancar
             tuntas = False
             try:
                 jelajah(f, a.leagues, a.seasons, a.with_odds, cerewet=True)  # hanya mengisi cache
@@ -860,6 +900,8 @@ def kumpulkan(a, cache: Path, opsi_browser: dict):
             finally:
                 f.tutup()
                 total_request += f.jumlah_request
+                ritme = f.delay
+                simpan_ritme(ritme)
 
             baru = jumlah_file() - sebelum
             if tuntas and (baru == 0 or not otomatis):

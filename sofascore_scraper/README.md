@@ -69,6 +69,10 @@ lalu membangun CSV gabungan di akhir. **Boleh ditinggal tidur**:
 - Data yang sempat gagal dicoba lagi di putaran berikutnya secara otomatis.
 - Laptop dicegah masuk *sleep* selama berjalan (layar boleh mati).
 - Ritme pelan (±7 detik per request, istirahat 5 menit tiap 100 request) agar sesuai batas SofaScore.
+- **Ritme adaptif:** tiap kena challenge, jeda otomatis diperlambat ×1,5 (maks. 30 detik);
+  setelah 200 request lancar, pelan-pelan dipercepat lagi (tidak lebih cepat dari `--delay`).
+  Ritme yang dipelajari disimpan di `data_sofascore/ritme.json` dan dipakai lagi pada run berikutnya.
+- Di awal tiap musim tampil perkiraan waktu, mis. `perlu diambil: 380 laga, perkiraan ±1 jam 10 menit`.
 - Setiap laga yang berhasil diambil tampil di layar, mis. `(51/380) Arsenal 2-0 Chelsea | 2018-08-11 14:00 | berhasil`.
 - Semua kejadian dicatat di `data_sofascore/log_scraping.txt`.
 
