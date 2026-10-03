@@ -82,6 +82,71 @@ lagi perintah yang sama; script melanjutkan dari cache.
 Sebelum ditinggal: **WARP tetap Connected**, laptop dicolok charger, dan jendela
 Chrome yang dibuka script jangan ditutup (boleh di-*minimize*).
 
+## 3b. Data tambahan untuk model UCL/UEL
+
+Kompetisi yang tersedia di `--leagues` (boleh pakai singkatan grup):
+
+| Singkatan | Isi |
+|---|---|
+| `top5` | premier-league, laliga, serie-a, bundesliga, ligue-1 |
+| `liga-tambahan` | super-lig (Turki), eredivisie (Belanda), liga-portugal |
+| `eropa` | ucl, uel |
+
+**Cek dulu ID kompetisinya** (sekali saja; harus muncul nama yang benar):
+```bash
+python sofascore_scraper.py --probe --leagues ucl uel super-lig eredivisie liga-portugal
+```
+Probe juga menampilkan daftar babak UCL; yang bertanda `<- kualifikasi` akan dilewati oleh
+`--tanpa-kualifikasi`.
+
+**Cara termudah: klik dua kali `jalankan_semua.bat`.** Urutannya:
+1. UCL + UEL fase utama **dengan odds** (`--leagues eropa --with-odds --tanpa-kualifikasi`)
+2. Süper Lig, Eredivisie, Liga Portugal (`--leagues liga-tambahan`)
+3. 5 liga top (melanjutkan dari cache)
+4. `bersihkan_playoff.py` lalu 5. `ambil_elo.py`
+
+Odds sengaja hanya untuk UCL/UEL (laga yang mau diprediksi) agar waktu scraping tidak
+berlipat. Kalau tetap mau odds liga domestik: `python sofascore_scraper.py --leagues top5 --with-odds`
+(statistik sudah di cache, jadi hanya odds yang diambil).
+
+**Perkiraan:** ±13.000 request (UCL/UEL ±2.650 laga × 2 karena odds, liga tambahan ±7.600 laga),
+yaitu ±1,5 hari pada ritme 7 detik, bisa sampai ±4–5 hari jika SofaScore sering memberi challenge.
+
+**Kolom baru** (semua kompetisi):
+
+| Kolom | Arti |
+|---|---|
+| `home_goals_90`, `away_goals_90` | skor 90 menit, **pakai ini sebagai target prediksi** |
+| `home_goals`, `away_goals` | skor akhir (bisa termasuk perpanjangan waktu + adu penalti) |
+| `home_pens`, `away_pens`, `extra_time` | adu penalti & perpanjangan waktu |
+| `stage`, `round_name` | tahap & babak (mis. "...Knockout stage", "Round of 16", "Final") |
+| `leg` | 1 / 2 untuk laga dua leg |
+| `winner_code`, `aggregated_winner_code` | pemenang laga / agregat (1 kandang, 2 tandang, 3 seri) |
+| `odds_home`, `odds_draw`, `odds_away` | odds desimal 1X2 (jika diambil) |
+| per tim: `goals_for_90`, `result_90` | hasil 90 menit dari sisi tim |
+
+Catatan: final UCL/UEL dan laga Agustus 2020 (Lisbon/Jerman) dimainkan di tempat netral;
+tandai lewat `round_name == "Final"` dan tanggal tersebut.
+
+CSV tetap bernama `sofascore_top5_2018_2026_per_laga.csv`, tetapi kini berisi **semua**
+kompetisi yang ada di cache (kolom `league` membedakannya). Menjalankan satu kompetisi saja
+tidak akan menimpa data kompetisi lain.
+
+### Elo (clubelo.com)
+
+```bash
+python ambil_elo.py
+```
+Menghasilkan `elo_per_laga.csv` (Elo kedua tim **sehari sebelum laga**, + `elo_diff`) dan
+`sofascore_dengan_elo_per_laga.csv`. Nama tim SofaScore dicocokkan otomatis ke nama clubelo;
+**buka `elo_pemetaan_nama.csv`** dan periksa baris `cek_manual` (Elo-nya dikosongkan sampai
+dikoreksi). Koreksi dengan membuat `data_sofascore/elo_pemetaan_manual.csv`:
+```
+sofascore;clubelo
+Nama Tim di SofaScore;Nama di clubelo
+```
+lalu jalankan lagi `python ambil_elo.py` (unduhan sebelumnya tidak diulang).
+
 ## 4. Hasil (folder `data_sofascore/`)
 
 | File | Isi |

@@ -45,12 +45,25 @@ LEAGUES = {
     "serie-a": (23, "Serie A"),
     "bundesliga": (35, "Bundesliga"),
     "ligue-1": (34, "Ligue 1"),
+    "super-lig": (52, "Super Lig"),
+    "eredivisie": (37, "Eredivisie"),
+    "liga-portugal": (238, "Liga Portugal"),
+    "ucl": (7, "UEFA Champions League"),
+    "uel": (679, "UEFA Europa League"),
 }
+
+# Singkatan untuk --leagues
+GRUP_LIGA = {
+    "top5": ["premier-league", "laliga", "serie-a", "bundesliga", "ligue-1"],
+    "liga-tambahan": ["super-lig", "eredivisie", "liga-portugal"],
+    "eropa": ["ucl", "uel"],
+}
+KOMPETISI_EROPA = {"UEFA Champions League", "UEFA Europa League"}
 
 SEASONS = ["18/19", "19/20", "20/21", "21/22", "22/23", "23/24", "24/25", "25/26"]
 
 # Kolom per-sisi yang BUKAN statistik (dipakai untuk memisahkan meta vs statistik)
-META_SISI = {"team_id", "team", "goals", "goals_ht"}
+META_SISI = {"team_id", "team", "goals", "goals_ht", "goals_90", "pens"}
 
 # Dijalankan di dalam tab sofascore.com: minta data API dengan cookie browser itu sendiri.
 # %s diganti URL tujuan (dalam format JSON).
@@ -582,6 +595,21 @@ def parse_odds(js) -> dict:
     return {}
 
 
+def skor_90(skor: dict):
+    if skor.get("normaltime") is not None:
+        return skor["normaltime"]
+    if skor.get("period1") is not None and skor.get("period2") is not None:
+        return skor["period1"] + skor["period2"]
+    return skor.get("current")
+
+
+def kualifikasi(ev) -> bool:
+    """Babak kualifikasi/pendahuluan kompetisi Eropa (sebelum fase grup/liga)."""
+    teks = " ".join(str(x or "") for x in ((ev.get("tournament") or {}).get("name"),
+                                           (ev.get("roundInfo") or {}).get("name"))).lower()
+    return any(k in teks for k in ("qualif", "preliminary"))
+
+
 def meta_laga(ev, liga, musim) -> dict:
     skor_h, skor_a = ev.get("homeScore") or {}, ev.get("awayScore") or {}
     ts = ev.get("startTimestamp")
@@ -600,6 +628,17 @@ def meta_laga(ev, liga, musim) -> dict:
         "away_goals": skor_a.get("current", skor_a.get("normaltime")),
         "home_goals_ht": skor_h.get("period1"),
         "away_goals_ht": skor_a.get("period1"),
+        # Skor 90 menit (tanpa perpanjangan waktu & adu penalti) -> target prediksi yang tepat
+        "home_goals_90": skor_90(skor_h),
+        "away_goals_90": skor_90(skor_a),
+        "home_pens": skor_h.get("penalties"),
+        "away_pens": skor_a.get("penalties"),
+        "extra_time": any(k in skor_h for k in ("overtime", "extra1", "extra2")),
+        "stage": (ev.get("tournament") or {}).get("name"),        # mis. "...Group A", "...Knockout"
+        "round_name": (ev.get("roundInfo") or {}).get("name"),    # mis. "Round of 16", "Final"
+        "previous_leg_event_id": ev.get("previousLegEventId"),     # terisi untuk leg ke-2
+        "winner_code": ev.get("winnerCode"),                       # 1 kandang, 2 tandang, 3 seri
+        "aggregated_winner_code": ev.get("aggregatedWinnerCode"),  # pemenang agregat 2 leg
         # Kartu merah TIDAK ada di endpoint statistik (terverifikasi). Di objek laga,
         # field ini hanya muncul bila ada kartu merah -> tidak ada berarti 0.
         "home_red_cards": ev.get("homeRedCards", 0),
@@ -637,7 +676,7 @@ def sudah_selesai(ev) -> bool:
     return (ev.get("status") or {}).get("type") == "finished"
 
 
-def jelajah(f: Fetcher, liga_pilih, musim_pilih, dengan_odds, cerewet=True):
+def jelajah(f: Fetcher, liga_pilih, musim_pilih, dengan_odds, cerewet=True, tanpa_kualifikasi=False):
     baris, dilewati, kamus = [], [], {}
     for slug in liga_pilih:
         utid, nama = LEAGUES[slug]
@@ -657,14 +696,25 @@ def jelajah(f: Fetcher, liga_pilih, musim_pilih, dengan_odds, cerewet=True):
                 if not sudah_selesai(e):
                     dilewati.append({"league": nama, "season": label_musim(m), "event_id": e.get("id"),
                                      "alasan": f"status: {(e.get('status') or {}).get('type')}"})
+            ada = lambda e, jenis: f._path_cache(f"/event/{e['id']}/{jenis}").exists()
+            if nama in KOMPETISI_EROPA:
+                # Kualifikasi dilewati jika diminta; saat build, kualifikasi yang memang
+                # belum pernah diambil juga dilewati (bukan dianggap "statistik hilang").
+                lewati = [e for e in selesai if kualifikasi(e) and
+                          (tanpa_kualifikasi if f.allow_network else not ada(e, "statistics"))]
+                if lewati:
+                    selesai = [e for e in selesai if e not in lewati]
+                    if f.allow_network and cerewet:
+                        catat(f"   {len(lewati)} laga kualifikasi dilewati (--tanpa-kualifikasi)")
             if cerewet:
                 catat(f"== {nama} {label_musim(m)}: {len(selesai)} laga selesai ==")
-                sisa = sum(1 for e in selesai if not f._path_cache(f"/event/{e['id']}/statistics").exists())
-                if sisa and f.allow_network:
-                    menit = sisa * (1 + dengan_odds) * (f.delay + 1.0) / 60
+                req = sum((not ada(e, "statistics")) + (dengan_odds and not ada(e, "odds/1/all"))
+                          for e in selesai)
+                if req and f.allow_network:
+                    menit = req * (f.delay + 1.0) / 60
                     if f.istirahat_tiap:
-                        menit += sisa * (1 + dengan_odds) / f.istirahat_tiap * f.istirahat_menit
-                    catat(f"   perlu diambil: {sisa} laga, perkiraan ±{menit // 60:.0f} jam "
+                        menit += req / f.istirahat_tiap * f.istirahat_menit
+                    catat(f"   perlu diambil: {req} request, perkiraan ±{menit // 60:.0f} jam "
                           f"{menit % 60:.0f} menit (ritme {f.delay:.1f} detik/request)")
             for i, ev in enumerate(sorted(selesai, key=lambda e: e.get("startTimestamp") or 0), 1):
                 baris_laga = meta_laga(ev, nama, label_musim(m))
@@ -694,8 +744,8 @@ def kunci_statistik(per_laga: pd.DataFrame) -> list:
 
 
 def ke_per_tim(per_laga: pd.DataFrame, kunci: list) -> pd.DataFrame:
-    meta = [c for c in ("event_id", "league", "season", "round", "date_utc", "timestamp")
-            if c in per_laga]
+    meta = [c for c in ("event_id", "league", "season", "stage", "round", "round_name", "leg",
+                        "extra_time", "date_utc", "timestamp") if c in per_laga]
     potongan = []
     for sisi, lawan in (("home", "away"), ("away", "home")):
         d = {c: per_laga[c] for c in meta}
@@ -703,6 +753,9 @@ def ke_per_tim(per_laga: pd.DataFrame, kunci: list) -> pd.DataFrame:
         d["team_id"], d["team"] = per_laga[f"{sisi}_team_id"], per_laga[f"{sisi}_team"]
         d["opponent_id"], d["opponent"] = per_laga[f"{lawan}_team_id"], per_laga[f"{lawan}_team"]
         d["goals_for"], d["goals_against"] = per_laga[f"{sisi}_goals"], per_laga[f"{lawan}_goals"]
+        if f"{sisi}_goals_90" in per_laga:
+            d["goals_for_90"], d["goals_against_90"] = per_laga[f"{sisi}_goals_90"], per_laga[f"{lawan}_goals_90"]
+            d["pens_for"], d["pens_against"] = per_laga[f"{sisi}_pens"], per_laga[f"{lawan}_pens"]
         if {"odds_home", "odds_draw", "odds_away"} <= set(per_laga.columns):
             d["odds_win"] = per_laga[f"odds_{sisi}"]
             d["odds_draw"] = per_laga["odds_draw"]
@@ -715,6 +768,10 @@ def ke_per_tim(per_laga: pd.DataFrame, kunci: list) -> pd.DataFrame:
     gf, ga = per_tim["goals_for"], per_tim["goals_against"]
     per_tim.insert(per_tim.columns.get_loc("goals_against") + 1, "result",
                    np.select([gf > ga, gf == ga], ["W", "D"], "L"))
+    if "goals_for_90" in per_tim:  # hasil 90 menit: target prediksi yang tepat untuk laga sistem gugur
+        g9, a9 = per_tim["goals_for_90"], per_tim["goals_against_90"]
+        per_tim.insert(per_tim.columns.get_loc("goals_against_90") + 1, "result_90",
+                       np.select([g9 > a9, g9 == a9], ["W", "D"], "L"))
     return per_tim.sort_values(["timestamp", "league", "team"]).reset_index(drop=True)
 
 
@@ -723,6 +780,11 @@ def simpan_keluaran(per_laga, dilewati, kamus, out: Path, sep: str):
         print("Belum ada data di cache untuk dibangun.")
         return
     per_laga = per_laga.sort_values(["timestamp", "league"]).reset_index(drop=True)
+    if "previous_leg_event_id" in per_laga:
+        leg_1 = set(per_laga["previous_leg_event_id"].dropna().astype(int))
+        per_laga.insert(per_laga.columns.get_loc("round_name") + 1, "leg",
+                        np.select([per_laga["previous_leg_event_id"].notna(),
+                                   per_laga["event_id"].isin(leg_1)], [2, 1], np.nan))
     kunci = kunci_statistik(per_laga)
     per_tim = ke_per_tim(per_laga, kunci)
 
@@ -880,7 +942,8 @@ def kumpulkan(a, cache: Path, opsi_browser: dict):
             f.delay_min = a.delay  # boleh kembali secepat --delay setelah lama lancar
             tuntas = False
             try:
-                jelajah(f, a.leagues, a.seasons, a.with_odds, cerewet=True)  # hanya mengisi cache
+                jelajah(f, a.leagues, a.seasons, a.with_odds, cerewet=True,  # hanya mengisi cache
+                        tanpa_kualifikasi=a.tanpa_kualifikasi)
                 tuntas = True
             except Terblokir as e:  # hanya terjadi di mode --manual
                 catat(f"[BERHENTI] {e}")
@@ -925,7 +988,10 @@ def main():
         pass
 
     p = argparse.ArgumentParser(description="Scraper SofaScore 5 liga top Eropa (penelitian berizin)")
-    p.add_argument("--leagues", nargs="+", default=list(LEAGUES), choices=list(LEAGUES))
+    p.add_argument("--leagues", nargs="+", default=list(LEAGUES), choices=list(LEAGUES) + list(GRUP_LIGA),
+                   help="liga/kompetisi, atau singkatan: top5, liga-tambahan, eropa (default: semua)")
+    p.add_argument("--tanpa-kualifikasi", action="store_true",
+                   help="lewati babak kualifikasi UCL/UEL (lebih cepat; fokus fase utama)")
     p.add_argument("--seasons", nargs="+", default=SEASONS, choices=SEASONS)
     p.add_argument("--mode", choices=["browser", "requests"], default="browser")
     p.add_argument("--browser", choices=["chrome", "edge"], default="chrome",
@@ -950,6 +1016,7 @@ def main():
     p.add_argument("--build-only", action="store_true", help="bangun CSV dari cache saja")
     p.add_argument("--cek-koneksi", action="store_true", help="diagnosis jaringan ke API SofaScore")
     a = p.parse_args()
+    a.leagues = list(dict.fromkeys(s for x in a.leagues for s in GRUP_LIGA.get(x, [x])))
 
     if a.cek_koneksi:
         cek_koneksi(a.contact)
@@ -967,6 +1034,10 @@ def main():
         # retry pendek agar probe cepat memberi kabar
         f = Fetcher(cache, a.mode, a.delay, backoff=min(a.backoff, 5), max_retries=2, **opsi_browser)
         try:
+            for slug in a.leagues:  # pastikan ID turnamen menunjuk kompetisi yang benar
+                info = (f.get(f"/unique-tournament/{LEAGUES[slug][0]}") or {}).get("uniqueTournament", {})
+                print(f"ID {LEAGUES[slug][0]:>4} ({slug}) -> di SofaScore: {info.get('name')!r} "
+                      f"[{(info.get('category') or {}).get('name')}]")
             utid, nama = LEAGUES[a.leagues[0]]
             peta = id_musim(f, utid)
             tersedia = [m for m in SEASONS if m in peta]
@@ -975,6 +1046,11 @@ def main():
                 laga = daftar_laga(f, utid, peta[tersedia[-1]])
                 selesai = [e for e in laga if sudah_selesai(e)]
                 print(f"Laga selesai di {label_musim(tersedia[-1])}: {len(selesai)}")
+                babak = sorted({f"{(e.get('tournament') or {}).get('name')} | "
+                                f"{(e.get('roundInfo') or {}).get('name')}" for e in selesai})
+                print(f"Babak/tahap yang ditemukan ({len(babak)}):")
+                for b in babak[:25]:
+                    print(f"   {b}{'   <- kualifikasi' if kualifikasi({'tournament': {'name': b}}) else ''}")
                 if selesai:
                     stat = parse_statistik(f.get(f"/event/{selesai[0]['id']}/statistics"))
                     print(f"Contoh laga {selesai[0]['id']}: {len(stat)} kolom statistik")
@@ -1003,7 +1079,12 @@ def main():
 
     print("\nMembangun CSV dari cache...")
     offline = Fetcher(cache, allow_network=False)
-    per_laga, dilewati, kamus = jelajah(offline, a.leagues, a.seasons, a.with_odds, cerewet=False)
+    # Selalu gabungkan SEMUA kompetisi yang sudah ada di cache (bukan hanya --leagues yang
+    # baru dijalankan), supaya CSV lama tidak tertimpa versi yang lebih sedikit isinya.
+    di_cache = [s for s, (utid, _) in LEAGUES.items()
+                if offline._path_cache(f"/unique-tournament/{utid}/seasons").exists()]
+    print("Kompetisi di cache: " + ", ".join(LEAGUES[s][1] for s in di_cache))
+    per_laga, dilewati, kamus = jelajah(offline, di_cache, SEASONS, True, cerewet=False)
     simpan_keluaran(per_laga, dilewati, kamus, out, a.sep)
 
 
