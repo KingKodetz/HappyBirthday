@@ -103,9 +103,10 @@ Probe juga menampilkan daftar babak UCL; yang bertanda `<- kualifikasi` akan dil
 1. UCL + UEL fase utama **dengan odds** (`--leagues eropa --with-odds --tanpa-kualifikasi`)
 2. Süper Lig, Eredivisie, Liga Portugal **dengan odds** (`--leagues liga-tambahan --with-odds`)
 3. Odds 5 liga top (`--leagues top5 --with-odds`; statistik sudah di cache, hanya odds yang diambil)
-4. `bersihkan_playoff.py` lalu 5. `ambil_elo.py`
+4. Babak kualifikasi UCL/UEL + odds (paling akhir)
+5. `bersihkan_playoff.py` lalu 6. `ambil_elo.py`
 
-**Perkiraan:** ±35.000 request (UCL/UEL ±2.650 laga × 2, liga tambahan ±7.600 laga × 2,
+**Perkiraan:** ±35.000 request (+ kualifikasi UCL/UEL di langkah 4) (UCL/UEL ±2.650 laga × 2, liga tambahan ±7.600 laga × 2,
 odds 5 liga ±14.300), yaitu ±3 hari pada ritme 7 detik, bisa sampai ±10–12 hari jika SofaScore
 sering memberi challenge. Urutannya dari yang terpenting, jadi data UCL/UEL siap lebih dulu.
 
@@ -119,8 +120,15 @@ sering memberi challenge. Urutannya dari yang terpenting, jadi data UCL/UEL siap
 | `stage`, `round_name` | tahap & babak (mis. "...Knockout stage", "Round of 16", "Final") |
 | `leg` | 1 / 2 untuk laga dua leg |
 | `winner_code`, `aggregated_winner_code` | pemenang laga / agregat (1 kandang, 2 tandang, 3 seri) |
-| `odds_home`, `odds_draw`, `odds_away` | odds desimal 1X2 (jika diambil) |
+| `odds_home`, `odds_draw`, `odds_away` | odds desimal 1X2 **penutupan** (terakhir sebelum laga) |
+| `odds_home_open`, ... | odds 1X2 **awal** (saat pasar dibuka) |
+| `odds_btts_yes/no`, `odds_over25/under25` (+ `_open`) | kedua tim mencetak gol; over/under 2.5 gol |
 | per tim: `goals_for_90`, `result_90` | hasil 90 menit dari sisi tim |
+
+**Semua pasar odds** (double chance, draw no bet, over/under semua garis, Asian handicap,
+babak pertama, dll.) ada di `odds_semua_pasar.csv` dalam format panjang: 1 baris = 1 pilihan,
+kolom `event_id, market, period, line, choice, odds_open, odds_close, winning`.
+Gabungkan ke data laga lewat `event_id`.
 
 Catatan: final UCL/UEL dan laga Agustus 2020 (Lisbon/Jerman) dimainkan di tempat netral;
 tandai lewat `round_name == "Final"` dan tanggal tersebut.

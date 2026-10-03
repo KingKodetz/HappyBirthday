@@ -581,9 +581,44 @@ def pecahan_ke_desimal(s):
         return None
 
 
+def odds_panjang(js, event_id) -> list:
+    """SEMUA pasar odds sebuah laga dalam format panjang (1 baris = 1 pilihan taruhan).
+    odds_open = odds awal saat pasar dibuka, odds_close = odds terakhir (penutupan)."""
+    baris = []
+    for pasar in (js or {}).get("markets", []) or []:
+        for c in pasar.get("choices", []) or []:
+            baris.append({
+                "event_id": event_id,
+                "market_id": pasar.get("marketId"),
+                "market": pasar.get("marketName"),
+                "market_group": pasar.get("marketGroup"),
+                "period": pasar.get("marketPeriod"),
+                "line": pasar.get("choiceGroup"),  # mis. 2.5 (over/under) atau garis handicap
+                "choice": c.get("name"),
+                "odds_open": pecahan_ke_desimal(c.get("initialFractionalValue")),
+                "odds_close": pecahan_ke_desimal(c.get("fractionalValue")),
+                "winning": c.get("winning"),
+            })
+    return baris
+
+
 def parse_odds(js) -> dict:
-    if not js:
-        return {}
+    """Odds terpenting dalam format lebar untuk file per laga (pasar lengkap: odds_semua_pasar.csv)."""
+    hasil = {}
+    for b in odds_panjang(js, None):
+        pasar, line, pilih = str(b["market"] or "").lower(), str(b["line"] or ""), str(b["choice"] or "")
+        kunci = None
+        if b["market_id"] == 1 or pasar in ("full time", "1x2"):
+            kunci = {"1": "home", "X": "draw", "2": "away"}.get(pilih)
+        elif "both teams" in pasar:
+            kunci = {"Yes": "btts_yes", "No": "btts_no"}.get(pilih)
+        elif ("goals" in pasar or "over/under" in pasar) and line.strip() == "2.5" \
+                and "half" not in pasar and "1st" not in pasar:
+            kunci = {"Over": "over25", "Under": "under25"}.get(pilih)
+        if kunci and f"odds_{kunci}" not in hasil:
+            hasil[f"odds_{kunci}"] = b["odds_close"]
+            hasil[f"odds_{kunci}_open"] = b["odds_open"]
+    return hasil
     for pasar in js.get("markets", []):
         if pasar.get("marketId") == 1 or pasar.get("marketName") in ("Full time", "1X2"):
             pilihan = {c.get("name"): c for c in pasar.get("choices", [])}
@@ -677,7 +712,7 @@ def sudah_selesai(ev) -> bool:
 
 
 def jelajah(f: Fetcher, liga_pilih, musim_pilih, dengan_odds, cerewet=True, tanpa_kualifikasi=False):
-    baris, dilewati, kamus = [], [], {}
+    baris, dilewati, kamus, odds_semua = [], [], {}, []
     for slug in liga_pilih:
         utid, nama = LEAGUES[slug]
         peta = id_musim(f, utid)
@@ -725,14 +760,17 @@ def jelajah(f: Fetcher, liga_pilih, musim_pilih, dengan_odds, cerewet=True, tanp
                                      "alasan": "statistik tidak tersedia"})
                 baris_laga.update(stat)
                 if dengan_odds:
-                    baris_laga.update(parse_odds(f.get(f"/event/{ev['id']}/odds/1/all")))
+                    js_odds = f.get(f"/event/{ev['id']}/odds/1/all")
+                    baris_laga.update(parse_odds(js_odds))
+                    if not f.allow_network:  # format panjang hanya dibutuhkan saat membangun CSV
+                        odds_semua += odds_panjang(js_odds, ev["id"])
                 baris.append(baris_laga)
                 if cerewet and f.jumlah_request > sebelum:  # laga yang baru diambil (bukan dari cache)
                     hasil = "berhasil" if stat else "statistik tidak tersedia"
                     catat(f"   ({i}/{len(selesai)}) {baris_laga['home_team']} "
                           f"{baris_laga['home_goals']}-{baris_laga['away_goals']} "
                           f"{baris_laga['away_team']} | {baris_laga['date_utc']} | {hasil}")
-    return pd.DataFrame(baris), pd.DataFrame(dilewati), kamus
+    return pd.DataFrame(baris), pd.DataFrame(dilewati), kamus, pd.DataFrame(odds_semua)
 
 
 # --------------------------------------------------------------------------
@@ -760,6 +798,10 @@ def ke_per_tim(per_laga: pd.DataFrame, kunci: list) -> pd.DataFrame:
             d["odds_win"] = per_laga[f"odds_{sisi}"]
             d["odds_draw"] = per_laga["odds_draw"]
             d["odds_loss"] = per_laga[f"odds_{lawan}"]
+            if "odds_home_open" in per_laga:
+                d["odds_win_open"] = per_laga[f"odds_{sisi}_open"]
+                d["odds_draw_open"] = per_laga["odds_draw_open"]
+                d["odds_loss_open"] = per_laga[f"odds_{lawan}_open"]
         for k in kunci:
             d[f"{k}_for"] = per_laga.get(f"{sisi}_{k}")
             d[f"{k}_against"] = per_laga.get(f"{lawan}_{k}")
@@ -1084,8 +1126,12 @@ def main():
     di_cache = [s for s, (utid, _) in LEAGUES.items()
                 if offline._path_cache(f"/unique-tournament/{utid}/seasons").exists()]
     print("Kompetisi di cache: " + ", ".join(LEAGUES[s][1] for s in di_cache))
-    per_laga, dilewati, kamus = jelajah(offline, di_cache, SEASONS, True, cerewet=False)
+    per_laga, dilewati, kamus, odds_semua = jelajah(offline, di_cache, SEASONS, True, cerewet=False)
     simpan_keluaran(per_laga, dilewati, kamus, out, a.sep)
+    if not odds_semua.empty:
+        odds_semua.to_csv(out / "odds_semua_pasar.csv", sep=a.sep, index=False, encoding="utf-8-sig")
+        print(f"Odds semua pasar: {len(odds_semua)} baris dari {odds_semua.event_id.nunique()} laga, "
+              f"{odds_semua.market.nunique()} jenis pasar -> odds_semua_pasar.csv")
 
 
 if __name__ == "__main__":
