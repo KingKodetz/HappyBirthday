@@ -101,16 +101,13 @@ Probe juga menampilkan daftar babak UCL; yang bertanda `<- kualifikasi` akan dil
 
 **Cara termudah: klik dua kali `jalankan_semua.bat`.** Urutannya:
 1. UCL + UEL fase utama **dengan odds** (`--leagues eropa --with-odds --tanpa-kualifikasi`)
-2. Süper Lig, Eredivisie, Liga Portugal (`--leagues liga-tambahan`)
-3. 5 liga top (melanjutkan dari cache)
+2. Süper Lig, Eredivisie, Liga Portugal **dengan odds** (`--leagues liga-tambahan --with-odds`)
+3. Odds 5 liga top (`--leagues top5 --with-odds`; statistik sudah di cache, hanya odds yang diambil)
 4. `bersihkan_playoff.py` lalu 5. `ambil_elo.py`
 
-Odds sengaja hanya untuk UCL/UEL (laga yang mau diprediksi) agar waktu scraping tidak
-berlipat. Kalau tetap mau odds liga domestik: `python sofascore_scraper.py --leagues top5 --with-odds`
-(statistik sudah di cache, jadi hanya odds yang diambil).
-
-**Perkiraan:** ±13.000 request (UCL/UEL ±2.650 laga × 2 karena odds, liga tambahan ±7.600 laga),
-yaitu ±1,5 hari pada ritme 7 detik, bisa sampai ±4–5 hari jika SofaScore sering memberi challenge.
+**Perkiraan:** ±35.000 request (UCL/UEL ±2.650 laga × 2, liga tambahan ±7.600 laga × 2,
+odds 5 liga ±14.300), yaitu ±3 hari pada ritme 7 detik, bisa sampai ±10–12 hari jika SofaScore
+sering memberi challenge. Urutannya dari yang terpenting, jadi data UCL/UEL siap lebih dulu.
 
 **Kolom baru** (semua kompetisi):
 
